@@ -27,8 +27,8 @@ Ensure you have the following installed before proceeding:
 Start by cloning the project repository:
 
 ```bash
-git clone https://your-repository-url.git
-cd your-project-directory
+git clone https://github.com/catplotlib/Vision_Transformers_with_ReinforcementLearning
+cd Vision_Transformers_with_ReinforcementLearning
 ```
 
 Install the required dependencies:
