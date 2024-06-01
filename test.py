@@ -1,10 +1,26 @@
 import os
 import torch
-from torchvision.utils import save_image, make_grid
-from torchvision import transforms
-from PIL import Image
+from torchvision.utils import save_image
 from models import VisionTransformer
-import matplotlib.pyplot as plt
+from utils.data_utils import load_data
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+from sklearn.metrics import mean_squared_error
+import numpy as np
+
+def evaluate_metrics(hr_img, sr_img):
+    hr_img = hr_img.astype(np.float32)
+    sr_img = sr_img.astype(np.float32)
+
+    hr_img = hr_img.reshape(-1)  # Flatten the array
+    sr_img = sr_img.reshape(-1)  # Flatten the array
+
+    mse = mean_squared_error(hr_img, sr_img)
+    nmae = np.mean(np.abs(hr_img - sr_img)) / np.mean(hr_img)
+    psnr_value = psnr(hr_img.reshape(1024, 1024, 3), sr_img.reshape(1024, 1024, 3), data_range=255)
+    ssim_value = ssim(hr_img.reshape(1024, 1024, 3), sr_img.reshape(1024, 1024, 3), data_range=255, multichannel=True, win_size=3)
+
+    return psnr_value, ssim_value, mse, nmae
 
 def test():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -17,45 +33,54 @@ def test():
     new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
     model.load_state_dict(new_state_dict)
     model.eval()
-    low_res_dir = 'data/val/low_res'
-    output_dir = "generated_images"
+
+    _, val_loader = load_data("data", batch_size=1, num_workers=4)
+
+    output_dir = "generated_images/gen"
     os.makedirs(output_dir, exist_ok=True)
-    transform = transforms.Compose([
-        transforms.Resize(input_size, Image.BICUBIC),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
-    for filename in os.listdir(low_res_dir):
-        if filename.endswith(".png") or filename.endswith(".jpg"):
-            low_res_path = os.path.join(low_res_dir, filename)
-            low_res_image = Image.open(low_res_path).convert("RGB")
-            low_res_image = transform(low_res_image).unsqueeze(0).to(device)
-            with torch.no_grad():
-                generated_image = model(low_res_image)
-            generated_image = generated_image.squeeze(0)
-            generated_image = (generated_image * 0.5) + 0.5
-            generated_image = torch.clamp(generated_image, min=0, max=1)
-            save_path = os.path.join(output_dir, f"generated_{filename}")
-            save_image(generated_image, save_path)
 
-            print(f"Generated image saved: {save_path}")
-    fig, axs = plt.subplots(2, len(os.listdir(low_res_dir)), figsize=(20, 10))
-    axs = axs.ravel()
-    for i, filename in enumerate(os.listdir(low_res_dir)):
-        if filename.endswith(".png") or filename.endswith(".jpg"):
-            low_res_path = os.path.join(low_res_dir, filename)
-            low_res_image = Image.open(low_res_path)
-            axs[i].imshow(low_res_image)
-            axs[i].set_title(f"Low-Res: {filename}")
-            axs[i].axis('off')
-            generated_path = os.path.join(output_dir, f"generated_{filename}")
-            generated_image = Image.open(generated_path)
-            axs[i + len(os.listdir(low_res_dir))].imshow(generated_image)
-            axs[i + len(os.listdir(low_res_dir))].set_title(f"Generated High-Res: {filename}")
-            axs[i + len(os.listdir(low_res_dir))].axis('off')
+    psnr_values = []
+    ssim_values = []
+    mse_values = []
+    nmae_values = []
 
-    plt.tight_layout()
-    plt.show()
+    for low_res_image, high_res_image in val_loader:
+        low_res_image = low_res_image.to(device)
+        high_res_image = high_res_image.to(device)
+
+        with torch.no_grad():
+            generated_image = model(low_res_image)
+
+        generated_image = generated_image.squeeze(0).cpu().numpy()
+        generated_image = np.transpose(generated_image, (1, 2, 0))
+        generated_image = ((generated_image * 0.5) + 0.5) * 255.0
+        generated_image = np.clip(generated_image, 0, 255).astype(np.uint8)
+
+        high_res_image = high_res_image.squeeze(0).cpu().numpy()
+        high_res_image = np.transpose(high_res_image, (1, 2, 0))
+        high_res_image = ((high_res_image * 0.5) + 0.5) * 255.0
+        high_res_image = np.clip(high_res_image, 0, 255).astype(np.uint8)
+
+        psnr_value, ssim_value, mse, nmae = evaluate_metrics(high_res_image, generated_image)
+        psnr_values.append(psnr_value)
+        ssim_values.append(ssim_value)
+        mse_values.append(mse)
+        nmae_values.append(nmae)
+
+        save_path = os.path.join(output_dir, f"generated_{len(psnr_values)}.png")
+        save_image(torch.from_numpy(generated_image).permute(2, 0, 1).float() / 255.0, save_path)
+
+        print(f"Generated image saved: {save_path}")
+
+    avg_psnr = np.mean(psnr_values)
+    avg_ssim = np.mean(ssim_values)
+    avg_mse = np.mean(mse_values)
+    avg_nmae = np.mean(nmae_values)
+
+    print(f"Average PSNR: {avg_psnr:.2f}")
+    print(f"Average SSIM: {avg_ssim:.4f}")
+    print(f"Average MSE: {avg_mse:.2f}")
+    print(f"Average NMAE: {avg_nmae:.4f}")
 
 if __name__ == '__main__':
     test()

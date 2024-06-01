@@ -1,34 +1,40 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import deepspeed
+from torchvision import transforms
+
+from models import DeepSpeedReward
 from models import VisionTransformer
-from utils.data_utils import load_data
-from utils.training_utils import train_model
-import matplotlib.pyplot as plt
-import os
+from utils import load_data
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-input_size = (1024, 1024)
-patch_size = (16, 16)
-num_classes = 1
+# Define training parameters
+input_size = (1024, 1024)  # Input image dimensions
+patch_size = (16, 16)      # Patch size for Vision Transformer
+hidden_dim = 256           # Hidden dimensions for DQN
+state_dim = input_size[0] * input_size[1] * 3  # State dimension, assuming RGB images
+action_dim = 9             # Number of possible actions
 batch_size = 8
 num_epochs = 200
 learning_rate = 1e-4
-patience = 100  
+gamma = 0.99               # Discount factor for DQN
+epsilon = 0.1              # Exploration rate for epsilon-greedy policy
+target_update = 10         # Frequency of target network update
 
-train_loader, val_loader = load_data("data", batch_size=batch_size, num_workers=4)
+# Load the dataset
+train_loader, _ = load_data('data', batch_size=batch_size, num_workers=4)
 
-train_dataset = train_loader.dataset
-val_dataset = val_loader.dataset
-
+# Initialize the model
 model = VisionTransformer(input_size, patch_size).to(device)
-
-loss_fn = nn.L1Loss()
-
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+loss_fn = torch.nn.MSELoss()
 
+# Initialize DeepSpeedReward
+rl_model = DeepSpeedReward(model, optimizer, loss_fn, state_dim, action_dim, hidden_dim, learning_rate, gamma, epsilon, target_update, device, batch_size)
+
+# Setup DeepSpeed
+# Setup DeepSpeed
 deepspeed_config = {
     "train_batch_size": batch_size,
     "optimizer": {
@@ -42,61 +48,20 @@ deepspeed_config = {
     }
 }
 
-model_engine, optimizer, _, _ = deepspeed.initialize(
-    model=model,
-    model_parameters=model.parameters(),
-    training_data=train_dataset,  # Pass the training dataset
-    config_params=deepspeed_config
-)
+# Initialize DeepSpeed
+rl_model.initialize_deepspeed(deepspeed_config)  # Pass the config directly
 
-train_loader = model_engine.deepspeed_io(train_dataset)
-
-train_losses = []
-best_loss = float('inf')
-epochs_without_improvement = 0
-
-os.makedirs("results/plots", exist_ok=True)
-
+# Training loop
 for epoch in range(num_epochs):
-    epoch_loss = 0
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for data, target in train_loader:
         data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
-        output = model_engine(data)
-        loss = loss_fn(output, target)
-        model_engine.backward(loss)
-        model_engine.step()
 
-        batch_loss = loss.item()
-        epoch_loss += batch_loss
-        if batch_idx % 10 == 0:  # Print every 10 batches
-            print(f'Epoch: {epoch+1}, Batch: {batch_idx}, Loss: {batch_loss:.4f}')
+        # Update the model with the current batch
+        rl_model.update_model(data, target,batch_size)
 
-    average_epoch_loss = epoch_loss / len(train_loader)
-    train_losses.append(average_epoch_loss)
-    print(f'End of Epoch {epoch+1}, Average Loss: {average_epoch_loss:.4f}')
+        print(f"Epoch {epoch}, Loss: {rl_model.loss_fn(rl_model.model(data), target).item()}")
 
-    # Check for improvement
-    if average_epoch_loss < best_loss:
-        best_loss = average_epoch_loss
-        epochs_without_improvement = 0
-    else:
-        epochs_without_improvement += 1
+    if epoch % target_update == 0:
+        rl_model.rl_agent.target_network.load_state_dict(rl_model.rl_agent.q_network.state_dict())
 
-    # Stop training if loss plateaus
-    if epochs_without_improvement >= patience:
-        print(f"No improvement in loss for {patience} epochs. Stopping training.")
-        break
-
-torch.save(model_engine.state_dict(), "trained_model.pth")
-print("Training completed and model saved.")
-
-plt.figure(figsize=(8, 6))
-plt.plot(train_losses, label='Training Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.title('Training Loss')
-plt.legend()
-plt.tight_layout()
-plt.savefig("results/plots/training_loss.png")
-plt.close()
+print("Training completed.")
