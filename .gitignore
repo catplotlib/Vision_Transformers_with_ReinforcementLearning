@@ -1,0 +1,30 @@
+# Ignore image files
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.gif
+
+# Ignore PyTorch model files
+*.pth
+*.pt
+
+# Ignore Python bytecode files
+__pycache__/
+*.py[cod]
+
+# Ignore logs and cache
+logs/
+*.log
+.cache/
+
+# Ignore editor and IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Ignore virtual environment
+venv/
+env/
