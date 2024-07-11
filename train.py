@@ -55,12 +55,18 @@ rl_model.initialize_deepspeed(deepspeed_config)  # Pass the config directly
 for epoch in range(num_epochs):
     for data, target in train_loader:
         data, target = data.to(device), target.to(device)
-
         # Update the model with the current batch
-        rl_model.update_model(data, target,batch_size)
-
-        print(f"Epoch {epoch}, Loss: {rl_model.loss_fn(rl_model.model(data), target).item()}")
-
+        rl_model.update_model(data, target, batch_size)
+        
+        # Calculate metrics for logging
+        with torch.no_grad():
+            output = rl_model.model(data)
+            mse_loss = rl_model.loss_fn(output, target).item()
+            ssim_value = ssim(output, target, data_range=1, size_average=True).item()
+            lpips_value = rl_model.lpips_fn(output, target).mean().item()
+        
+        print(f"Epoch {epoch}, MSE Loss: {mse_loss:.4f}, SSIM: {ssim_value:.4f}, LPIPS: {lpips_value:.4f}")
+    
     if epoch % target_update == 0:
         rl_model.rl_agent.target_network.load_state_dict(rl_model.rl_agent.q_network.state_dict())
 
