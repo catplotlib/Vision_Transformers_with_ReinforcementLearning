@@ -7,6 +7,9 @@ from models import DeepSpeedReward
 from models import VisionTransformer
 from utils import load_data
 
+from pytorch_msssim import ssim
+import lpips
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Define training parameters
