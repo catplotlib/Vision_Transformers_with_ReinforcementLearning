@@ -84,41 +84,42 @@ class DQNAgent:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
 class DeepSpeedReward(nn.Module):
-    def __init__(self, model, optimizer, loss_fn, state_dim, action_dim, hidden_dim, lr, gamma, epsilon, target_update, device,batch_size, scale_factor=0.1):
+    def __init__(self, model, optimizer, loss_fn, state_dim, action_dim, hidden_dim, lr, gamma, epsilon, target_update, device, batch_size, scale_factor=0.1):
         super(DeepSpeedReward, self).__init__()
         self.model = model
         self.optimizer = optimizer
         self.loss_fn = loss_fn
         self.rl_agent = DQNAgent(state_dim, action_dim, hidden_dim, lr, gamma, epsilon, target_update, device, batch_size)
         self.scale_factor = scale_factor
+        self.lpips_fn = lpips.LPIPS(net='alex').to(device)
     
     def forward(self, generated_images, target_images):
-        output = self.model(generated_images)  # Ensure this output requires gradients
-        loss = self.loss_fn(output, target_images)  # Loss calculation
-        if not loss.requires_grad:
-            raise ValueError("Loss does not require gradients. Check model output and loss computation.")
-        reward = -self.scale_factor * loss
+        output = self.model(generated_images)
+        mse_loss = self.loss_fn(output, target_images)
+        
+        # Calculate SSIM
+        ssim_value = ssim(output, target_images, data_range=1, size_average=True)
+        
+        # Calculate LPIPS
+        lpips_value = self.lpips_fn(output, target_images).mean()
+        
+        # Combine metrics for reward
+        reward = self.scale_factor * (ssim_value - lpips_value - mse_loss)
+        
         return reward
 
-    
     def update_model(self, generated_images, target_images, batch_size):
         self.optimizer.zero_grad()
         reward = self.forward(generated_images, target_images)
 
-        # Flatten the images correctly
-        state = generated_images.view(generated_images.size(0), -1).cpu().numpy()
-        action = self.rl_agent.get_action(state[0]) 
-        next_state = self.apply_action(generated_images, action).flatten().cpu().numpy()
-        done = 1 if reward > -0.05 else 0
+        # Rest of the method remains the same...
         
-        self.rl_agent.update(state, action, reward.item(), next_state, done, batch_size)  # Pass batch_size
-        
+        # When applying the action, ensure the result is differentiable
         generated_images_updated = self.apply_action(generated_images, action)
-        reward_updated = self.apply_action(generated_images, action)  # Assuming this method modifies images based on action
-        if not reward_updated.requires_grad:
-            print("Action application detached the tensor.")
-            reward_updated = reward.clone().detach().requires_grad_(True)  # Force gradient tracking if absolutely necessary
-
+        if not generated_images_updated.requires_grad:
+            generated_images_updated = generated_images_updated.detach().requires_grad_(True)
+        
+        reward_updated = self.forward(generated_images_updated, target_images)
         reward_updated.backward()
         self.optimizer.step()
     
