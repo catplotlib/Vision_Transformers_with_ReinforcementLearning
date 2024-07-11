@@ -4,6 +4,8 @@ import torch.optim as optim
 import deepspeed
 import numpy as np
 import random
+from pytorch_msssim import ssim
+import lpips
 
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim):
